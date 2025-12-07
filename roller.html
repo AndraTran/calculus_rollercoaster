@@ -1,0 +1,347 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Mini Roller Coaster Simulator — Fixed Graphs</title>
+<style>
+  body{font-family:system-ui,Segoe UI,Arial;margin:12px}
+  #ui{display:flex;gap:16px;margin-bottom:12px}
+  .panel{padding:8px;border:1px solid #ddd;border-radius:6px}
+  canvas{background:#fff;border:1px solid #ccc}
+  .bad{color:#b00;font-weight:700}
+  .good{color:green;font-weight:700}
+  textarea{width:100%;height:160px}
+  button.small{padding:6px 8px;margin-top:6px}
+</style>
+</head>
+<body>
+  <h3>Mini Roller Coaster — Fixed (Shapes)</h3>
+  <div id="ui">
+    <div class="panel" style="width:430px">
+      <label>Track:
+        <select id="trackType">
+          <option value="gauss">Gaussian hump</option>
+          <option value="sine">Sine wave</option>
+          <option value="cosine">Cosine wave</option>
+          <option value="tanh">Tanh (S-shape)</option>
+        </select>
+      </label>
+      <div id="params"></div>
+      <div style="margin-top:6px">
+        <label>v0 (m/s) <input id="v0" type="number" value="0" step="0.5"></label><br>
+        <label>friction c (J per m) <input id="cLoss" type="number" value="0.2" step="0.1"></label><br>
+        <button id="recalc" class="small">Recompute</button>
+        <button id="exportReport" class="small">Export safety report (CSV)</button>
+      </div>
+    </div>
+
+    <div class="panel" style="width:250px">
+      <div>Safety thresholds</div>
+      <label>pos g max <input id="gPos" type="number" value="5" step="0.1"></label><br>
+      <label>neg g min <input id="gNeg" type="number" value="-1.5" step="0.1"></label><br>
+      <div style="margin-top:8px"><span id="status" class="good">OK</span></div>
+    </div>
+  </div>
+
+  <canvas id="trackCanvas" width=900 height=300></canvas>
+  <div style="display:flex;gap:12px;margin-top:8px">
+    <canvas id="plotV" width=450 height=160></canvas>
+    <canvas id="plotG" width=450 height=160></canvas>
+  </div>
+
+  <div style="margin-top:8px;display:flex;gap:12px">
+    <div style="flex:1" class="panel">
+      <div><strong>Report / Unsafe points</strong></div>
+      <textarea id="reportArea" readonly></textarea>
+      <div style="margin-top:6px"><button id="copyReport" class="small">Copy</button></div>
+    </div>
+  </div>
+
+<script>
+/* Fixed simulator */
+const g = 9.81;
+const N = 800;
+const xStart = 0, xEnd = 60;
+
+const trackTypeEl = document.getElementById('trackType');
+const paramsDiv = document.getElementById('params');
+const recalcBtn = document.getElementById('recalc');
+const v0El = document.getElementById('v0');
+const cLossEl = document.getElementById('cLoss');
+const gPosEl = document.getElementById('gPos');
+const gNegEl = document.getElementById('gNeg');
+const statusEl = document.getElementById('status');
+const exportBtn = document.getElementById('exportReport');
+const reportArea = document.getElementById('reportArea');
+const copyBtn = document.getElementById('copyReport');
+
+const tc = document.getElementById('trackCanvas'), tcx = tc.getContext('2d');
+const pV = document.getElementById('plotV'), pvx = pV.getContext('2d');
+const pG = document.getElementById('plotG'), pgx = pG.getContext('2d');
+
+let animHandle = null; // to cancel animations
+
+function setParamsUI(){
+  const t = trackTypeEl.value;
+  paramsDiv.innerHTML = '';
+  if(t==='gauss'){
+    paramsDiv.innerHTML = `
+      <label>h (height) <input id="h" type="number" value="6" step="0.5"></label><br>
+      <label>x0 (center) <input id="x0" type="number" value="30" step="1"></label><br>
+      <label>sigma <input id="sigma" type="number" value="6" step="0.5"></label>
+    `;
+  } else if(t==='sine' || t==='cosine'){
+    paramsDiv.innerHTML = `
+      <label>A (amplitude) <input id="A" type="number" value="3" step="0.2"></label><br>
+      <label>k (wavenumber) <input id="k" type="number" value="0.3" step="0.01"></label><br>
+      <label>phase (rad) <input id="phi" type="number" value="0" step="0.1"></label>
+    `;
+  } else if(t==='tanh'){
+    paramsDiv.innerHTML = `
+      <label>A (amplitude) <input id="A" type="number" value="4" step="0.2"></label><br>
+      <label>x0 (center) <input id="x0" type="number" value="30" step="1"></label><br>
+      <label>scale <input id="scale" type="number" value="6" step="0.5"></label>
+    `;
+  }
+}
+trackTypeEl.addEventListener('change', setParamsUI);
+setParamsUI();
+
+function yOf(x){
+  const t = trackTypeEl.value;
+  if(t==='gauss'){
+    const h = +document.getElementById('h').value, x0 = +document.getElementById('x0').value, sigma = +document.getElementById('sigma').value;
+    return (h * Math.exp(- (x-x0)*(x-x0) / (2*sigma*sigma)));
+  } else if(t==='sine'){
+    const A = +document.getElementById('A').value, k = +document.getElementById('k').value, phi = +document.getElementById('phi').value;
+    return A * Math.sin(k*x + phi);
+  } else if(t==='cosine'){
+    const A = +document.getElementById('A').value, k = +document.getElementById('k').value, phi = +document.getElementById('phi').value;
+    return A * Math.cos(k*x + phi);
+  } else if(t==='tanh'){
+    const A = +document.getElementById('A').value, x0 = +document.getElementById('x0').value, scale = +document.getElementById('scale').value;
+    return A * Math.tanh((x - x0)/scale);
+  }
+  return 0;
+}
+
+function analyticDerivatives(xs, ys){
+  const y1 = new Array(N);
+  const y2 = new Array(N);
+  const t = trackTypeEl.value;
+  if(t==='gauss'){
+    const h = +document.getElementById('h').value, x0 = +document.getElementById('x0').value, sigma = +document.getElementById('sigma').value;
+    for(let i=0;i<N;i++){
+      const x = xs[i];
+      const expc = Math.exp(- (x-x0)*(x-x0) / (2*sigma*sigma));
+      const yprime = h * expc * (-(x-x0)/(sigma*sigma));
+      const ydouble = h * expc * ( ((x-x0)*(x-x0))/(sigma*sigma*sigma*sigma) - 1/(sigma*sigma) );
+      y1[i]=yprime; y2[i]=ydouble;
+    }
+    return {y1,y2};
+  }
+  if(t==='sine'){
+    const A = +document.getElementById('A').value, k = +document.getElementById('k').value, phi = +document.getElementById('phi').value;
+    for(let i=0;i<N;i++){
+      const x = xs[i];
+      y1[i] = A * k * Math.cos(k*x + phi);
+      y2[i] = - A * k * k * Math.sin(k*x + phi);
+    }
+    return {y1,y2};
+  }
+  if(t==='cosine'){
+    const A = +document.getElementById('A').value, k = +document.getElementById('k').value, phi = +document.getElementById('phi').value;
+    for(let i=0;i<N;i++){
+      const x = xs[i];
+      y1[i] = - A * k * Math.sin(k*x + phi);
+      y2[i] = - A * k * k * Math.cos(k*x + phi);
+    }
+    return {y1,y2};
+  }
+  if(t==='tanh'){
+    const A = +document.getElementById('A').value, x0 = +document.getElementById('x0').value, scale = +document.getElementById('scale').value;
+    for(let i=0;i<N;i++){
+      const x = xs[i];
+      const z = (x - x0)/scale;
+      const coshZ = Math.cosh(z);
+      const sech2 = 1 / (coshZ * coshZ);
+      y1[i] = A * sech2 * (1/scale);
+      y2[i] = A * (-2) * sech2 * Math.tanh(z) * (1/(scale*scale));
+    }
+    return {y1,y2};
+  }
+  // fallback finite differences if none matched
+  for(let i=1;i<N-1;i++){
+    const dx = xs[i+1]-xs[i-1];
+    y1[i] = (ys[i+1]-ys[i-1]) / dx;
+    y2[i] = (ys[i+1] - 2*ys[i] + ys[i-1]) / ((dx/2)*(dx/2));
+  }
+  y1[0]=y1[1]; y1[N-1]=y1[N-2];
+  y2[0]=y2[1]; y2[N-1]=y2[N-2];
+  return {y1,y2};
+}
+
+function sampleTrack(){
+  const xs = new Array(N);
+  const ys = new Array(N);
+  for(let i=0;i<N;i++){
+    const x = xStart + (xEnd-xStart)*i/(N-1);
+    xs[i]=x; ys[i]=yOf(x);
+  }
+  return {xs, ys};
+}
+
+function analyze(){
+  const {xs, ys} = sampleTrack();
+  const {y1,y2} = analyticDerivatives(xs, ys);
+
+  const sArr = new Array(N);
+  const rhoArr = new Array(N);
+  const vArr = new Array(N);
+  const gVert = new Array(N);
+  const theta = new Array(N);
+
+  let s = 0;
+  sArr[0]=0;
+  for(let i=1;i<N;i++){
+    const dx = xs[i]-xs[i-1];
+    const s1 = Math.sqrt(1 + y1[i-1]*y1[i-1]);
+    const s2 = Math.sqrt(1 + y1[i]*y1[i]);
+    const ds = 0.5*(s1 + s2) * dx;
+    s += ds; sArr[i]=s;
+  }
+
+  const v0 = Math.max(0, +v0El.value);
+  const cLoss = Math.max(0, +cLossEl.value);
+  const y0 = ys[0];
+
+  for(let i=0;i<N;i++){
+    const denom = Math.pow(1 + y1[i]*y1[i], 1.5);
+    const kappa = Math.abs(y2[i]) / (denom || 1e-12);
+    const rho = (kappa>1e-9) ? (1/kappa) : 1e9;
+    rhoArr[i]=rho;
+    const val = v0*v0 + 2*g*(y0 - ys[i]) - 2*cLoss*sArr[i];
+    vArr[i]= Math.sqrt(Math.max(0,val));
+    theta[i] = Math.atan(y1[i]);
+    const ac = (rho>1e8) ? 0 : (vArr[i]*vArr[i]/rho);
+    gVert[i] = Math.cos(theta[i]) + ac / g;
+  }
+
+  return {xs, ys, sArr, vArr, gVert, rhoArr, theta};
+}
+
+/* drawing helpers */
+function clearCanvas(c, ctx){ ctx.clearRect(0,0,c.width,c.height); }
+
+function drawTrackAndAnimate(data){
+  // cancel previous animation
+  if(animHandle) { cancelAnimationFrame(animHandle); animHandle = null; }
+
+  clearCanvas(tc, tcx);
+  const pad = 20;
+  const X = (x)=> pad + (tc.width-2*pad)*( (x - xStart)/(xEnd-xStart) );
+  // compute yMin/yMax robustly
+  let yMin = data.ys[0], yMax = data.ys[0];
+  for(let i=1;i<data.ys.length;i++){ if(data.ys[i] < yMin) yMin = data.ys[i]; if(data.ys[i] > yMax) yMax = data.ys[i]; }
+  const Y = (y)=> tc.height - (pad + (tc.height-2*pad)*( (y - yMin)/(yMax-yMin || 1e-6) ));
+
+  tcx.lineWidth = 2; tcx.beginPath();
+  for(let i=0;i<N;i++){
+    const px = X(data.xs[i]), py = Y(data.ys[i]);
+    if(i===0) tcx.moveTo(px,py); else tcx.lineTo(px,py);
+  }
+  tcx.strokeStyle = '#222'; tcx.stroke();
+
+  const gPosMax = +gPosEl.value, gNegMin = +gNegEl.value;
+  tcx.lineWidth = 6;
+  for(let i=1;i<N;i++){
+    const bad = (data.gVert[i] > gPosMax) || (data.gVert[i] < gNegMin);
+    tcx.strokeStyle = bad ? 'rgba(200,0,0,0.9)' : 'rgba(0,160,0,0.6)';
+    tcx.beginPath();
+    tcx.moveTo(X(data.xs[i-1]), Y(data.ys[i-1]));
+    tcx.lineTo(X(data.xs[i]), Y(data.ys[i]));
+    tcx.stroke();
+  }
+
+  let unsafeCount=0;
+  for(let i=0;i<N;i++){
+    if(data.gVert[i] > gPosMax || data.gVert[i] < gNegMin) unsafeCount++;
+  }
+  const status = unsafeCount ? (`Unsafe at ${unsafeCount} points`) : 'OK';
+  statusEl.textContent = status;
+  statusEl.className = unsafeCount ? 'bad' : 'good';
+
+  const lines = [];
+  lines.push('x, y, g_vertical');
+  for(let i=0;i<N;i++){
+    if(data.gVert[i] > gPosMax || data.gVert[i] < gNegMin){
+      lines.push(`${data.xs[i].toFixed(3)}, ${data.ys[i].toFixed(4)}, ${data.gVert[i].toFixed(3)}`);
+    }
+  }
+  if(lines.length===1) lines.push('SAFE');
+  reportArea.value = lines.join('\n');
+
+  // animation
+  let idx = 0;
+  function step(){
+    const v = data.vArr[idx] || 0.01;
+    const speedFactor = 0.03;
+    idx = Math.min(N-1, idx + Math.max(1, Math.floor(speedFactor * v)));
+    clearCanvas(tc, tcx);
+    tcx.lineWidth=2; tcx.strokeStyle='#222'; tcx.beginPath();
+    for(let i=0;i<N;i++){ const px=X(data.xs[i]), py=Y(data.ys[i]); if(i==0) tcx.moveTo(px,py); else tcx.lineTo(px,py); } tcx.stroke();
+    tcx.lineWidth=6;
+    for(let i=1;i<N;i++){
+      const bad = (data.gVert[i] > gPosMax) || (data.gVert[i] < gNegMin);
+      tcx.strokeStyle = bad ? 'rgba(200,0,0,0.9)' : 'rgba(0,160,0,0.6)';
+      tcx.beginPath(); tcx.moveTo(X(data.xs[i-1]), Y(data.ys[i-1])); tcx.lineTo(X(data.xs[i]), Y(data.ys[i])); tcx.stroke();
+    }
+    tcx.beginPath(); tcx.fillStyle='blue'; tcx.arc(X(data.xs[idx]), Y(data.ys[idx]), 6,0,Math.PI*2); tcx.fill();
+
+    if(idx < N-1) animHandle = requestAnimationFrame(step);
+    else animHandle = null;
+  }
+  animHandle = requestAnimationFrame(step);
+}
+
+function drawPlot(canvas, ctx, xs, ys, label){
+  clearCanvas(canvas, ctx);
+  const pad=28;
+  // ensure ys is regular array and compute min/max safely
+  const arr = Array.from(ys);
+  let mn = arr[0], mx = arr[0];
+  for(let i=1;i<arr.length;i++){ if(arr[i] < mn) mn = arr[i]; if(arr[i] > mx) mx = arr[i]; }
+  if(!isFinite(mn) || !isFinite(mx)){ mn = -1; mx = 1; }
+  if(mn === mx){ mn -= 1; mx += 1; }
+  const X = (i)=> pad + (canvas.width-2*pad) * (i/(N-1));
+  const Y = (v)=> canvas.height - (pad + (canvas.height-2*pad)*((v-mn)/(mx-mn)));
+  ctx.lineWidth=1.5; ctx.beginPath();
+  for(let i=0;i<N;i++){ const px=X(i), py=Y(arr[i]); if(i===0) ctx.moveTo(px,py); else ctx.lineTo(px,py); }
+  ctx.strokeStyle='#0077cc'; ctx.stroke();
+  ctx.fillStyle='#222'; ctx.fillText(label, 6, 12);
+  if(mn<=0 && mx>=0){ const y0 = Y(0); ctx.strokeStyle='#ccc'; ctx.beginPath(); ctx.moveTo(pad,y0); ctx.lineTo(canvas.width-pad,y0); ctx.stroke(); }
+}
+
+function recomputeAndDraw(){
+  // cancel any existing animation to avoid race
+  if(animHandle){ cancelAnimationFrame(animHandle); animHandle = null; }
+  const data = analyze();
+  drawTrackAndAnimate(data);
+  // note: pass regular arrays for plotting
+  drawPlot(pV, pvx, data.xs, data.vArr, 'v (m/s)');
+  drawPlot(pG, pgx, data.xs, data.gVert, 'g (g units)');
+}
+
+recalcBtn.addEventListener('click', recomputeAndDraw);
+exportBtn.addEventListener('click', ()=>{
+  const csv = reportArea.value;
+  const blob = new Blob([csv], {type:'text/csv'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href=url; a.download = 'roller_report.csv'; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+});
+copyBtn.addEventListener('click', ()=>{ navigator.clipboard.writeText(reportArea.value); });
+
+recomputeAndDraw();
+</script>
+</body>
+</html>
