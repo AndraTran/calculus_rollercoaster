@@ -361,7 +361,6 @@ function generateSuggestions(data){
   
   // High positive g (too much crushing force)
   if(maxPosG > MAX_POS_G){
-    suggestions.push(`<strong>To improve the safety of the track, please try</strong>:`);
     
     if(t === 'gauss'){
       const h = +document.getElementById('h').value;
