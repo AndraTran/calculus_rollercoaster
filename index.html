@@ -61,7 +61,6 @@
       <div><strong>Safety Thresholds (Fixed)</strong></div>
       <div class="threshold-item">✓ Vertical G-force (positive): <strong>5.0g</strong> max</div>
       <div class="threshold-item">✓ Vertical G-force (negative): <strong>-2.0g</strong> min</div>
-      <div class="threshold-item">✓ Lateral G-force: <strong>2.75g</strong> max</div>
       <div class="threshold-item">✓ Tangential acceleration: <strong>1.5g</strong> max</div>
       <div style="margin-top:12px;padding-top:8px;border-top:1px solid #ddd">
         <div style="font-size:12px;margin-bottom:4px"><strong>Legend:</strong></div>
@@ -726,7 +725,6 @@ tc.addEventListener('mousemove', (e)=>{
     <strong>Position:</strong> x = ${x.toFixed(2)}m, y = ${y.toFixed(2)}m<br>
     <strong>Velocity:</strong> ${v.toFixed(2)} m/s<br>
     <strong>Vertical g:</strong> ${gVert >= 0 ? '+' : ''}${gVert.toFixed(2)}g ${gVert > MAX_POS_G || gVert < MIN_NEG_G ? '🔴' : gVert > MAX_POS_G * WARNING_FACTOR || gVert < MIN_NEG_G * WARNING_FACTOR ? '⚠️' : '✓'}<br>
-    <strong>Lateral g:</strong> ${gLat >= 0 ? '+' : ''}${gLat.toFixed(2)}g ✓<br>
     <strong>Tangential g:</strong> ${gTang >= 0 ? '+' : ''}${gTang.toFixed(2)}g ${Math.abs(gTang) > MAX_TANG_G ? '🔴' : Math.abs(gTang) > MAX_TANG_G * WARNING_FACTOR ? '⚠️' : '✓'}<br>
     <strong>Status:</strong> ${statusIcon} ${statusText}
   `;
